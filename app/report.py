@@ -40,6 +40,13 @@ HANDOVER_REASON_TEXT = {
     "adjacency_changed": "事件新增或调整后两条记录不再相邻",
 }
 
+ATTACHMENT_STATUS_TEXT = {"ok": "正常", "corrupt": "损坏"}
+MEDIA_TEXT = {
+    "application/pdf": "PDF",
+    "image/jpeg": "JPEG 图片",
+    "image/png": "PNG 图片",
+}
+
 
 def _md_cell(text: Any) -> str:
     """转义 Markdown 表格单元格中的竖线。"""
@@ -51,6 +58,8 @@ def build_markdown(
     audit: dict[str, Any],
     signoffs: list[dict[str, Any]] | None = None,
     handovers: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    event_index: dict[int, dict[str, Any]] | None = None,
 ) -> str:
     s = audit["summary"]
     lines = [
@@ -98,7 +107,41 @@ def build_markdown(
 
     lines += _signoff_markdown(signoffs)
     lines += _handover_markdown(handovers)
+    lines += _attachment_markdown(attachments, event_index or {})
     return "\n".join(lines)
+
+
+def _attachment_owner(a: dict[str, Any], event_index: dict[int, dict[str, Any]]) -> str:
+    e = event_index.get(a["event_id"])
+    return e["custodian"] if e else f"事件 #{a['event_id']}（已删除/不参与审计）"
+
+
+def _attachment_markdown(
+    attachments: list[dict[str, Any]] | None,
+    event_index: dict[int, dict[str, Any]],
+) -> list[str]:
+    lines = ["## 事件证据附件", ""]
+    if not attachments:
+        return lines + ["_暂无证据附件。_", ""]
+    lines += [
+        f"共 {len(attachments)} 个附件记录（相同内容实体只存一份）；报告仅列附件元数据，"
+        "不包含文件内容。",
+        "",
+        "| # | 所属事件（经手人） | 原文件名 | 类型 | 大小 | 上传人 | 上传时间 | SHA-256 | 完整性 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for i, a in enumerate(attachments, 1):
+        status = ATTACHMENT_STATUS_TEXT.get(a["status"], a["status"])
+        if a["status"] == "corrupt":
+            status = f"**损坏**（{a.get('corruption_reason_text') or a.get('corruption_reason') or '—'}）"
+        lines.append(
+            f"| {i} | {_md_cell(_attachment_owner(a, event_index))} | "
+            f"{_md_cell(a['filename'])} | {MEDIA_TEXT.get(a['media_type'], a['media_type'])} | "
+            f"{a.get('size_text') or a['size']} | {_md_cell(a['uploaded_by'])} | "
+            f"{_md_cell(a['uploaded_at'])} | `{_md_cell(a['digest'])}` | {status} |"
+        )
+    lines.append("")
+    return lines
 
 
 def _handover_markdown(handovers: dict[str, Any] | None) -> list[str]:
@@ -191,6 +234,8 @@ def build_html(
     audit: dict[str, Any],
     signoffs: list[dict[str, Any]] | None = None,
     handovers: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    event_index: dict[int, dict[str, Any]] | None = None,
 ) -> str:
     s = audit["summary"]
     status_class = {"pass": "ok", "warning": "warn", "fail": "bad", "empty": "muted"}.get(
@@ -244,6 +289,7 @@ def build_html(
         signoff_rows = "<tr><td colspan='7' class='muted'>尚未有任何签署记录。</td></tr>"
 
     handover_section = _handover_html(handovers)
+    attachment_section = _attachment_html(attachments, event_index or {})
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -324,8 +370,52 @@ def build_html(
     </table>
   </div>
   {handover_section}
+  {attachment_section}
 </body>
 </html>
+"""
+
+
+def _attachment_html(
+    attachments: list[dict[str, Any]] | None,
+    event_index: dict[int, dict[str, Any]],
+) -> str:
+    if not attachments:
+        return (
+            "<div class='card'><h2>事件证据附件</h2>"
+            "<p class='muted'>暂无证据附件。</p></div>"
+        )
+    rows_html = ""
+    for i, a in enumerate(attachments, 1):
+        if a["status"] == "corrupt":
+            status = (
+                "<span class='status bad'>损坏</span><br><span class='muted'>"
+                + html.escape(a.get("corruption_reason_text") or a.get("corruption_reason") or "—")
+                + "</span>"
+            )
+        else:
+            status = "<span class='status ok'>正常</span>"
+        rows_html += (
+            f"<tr><td>{i}</td>"
+            f"<td>{html.escape(_attachment_owner(a, event_index))}</td>"
+            f"<td>{html.escape(a['filename'])}</td>"
+            f"<td>{html.escape(MEDIA_TEXT.get(a['media_type'], a['media_type']))}</td>"
+            f"<td>{html.escape(a.get('size_text') or str(a['size']))}</td>"
+            f"<td>{html.escape(a['uploaded_by'])}</td>"
+            f"<td>{html.escape(a['uploaded_at'])}</td>"
+            f"<td><code>{html.escape(a['digest'])}</code></td>"
+            f"<td>{status}</td></tr>"
+        )
+    return f"""
+  <div class="card">
+    <h2>事件证据附件（仅元数据，不含文件内容）</h2>
+    <p class="meta">共 {len(attachments)} 个附件记录；相同内容实体只存一份，按 SHA-256 内容寻址。</p>
+    <table>
+      <tr><th>#</th><th>所属事件（经手人）</th><th>原文件名</th><th>类型</th>
+          <th>大小</th><th>上传人</th><th>上传时间</th><th>SHA-256</th><th>完整性</th></tr>
+      {rows_html}
+    </table>
+  </div>
 """
 
 
@@ -418,7 +508,27 @@ def build_json(
     audit: dict[str, Any],
     signoffs: list[dict[str, Any]] | None = None,
     handovers: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
+    # 报告只列附件元数据（文件名 / 大小 / 上传人 / 时间 / 摘要 / 完整性），
+    # 不含文件内容与下载地址。
+    attachment_meta = [
+        {
+            "id": a["id"],
+            "event_id": a["event_id"],
+            "filename": a["filename"],
+            "size": a["size"],
+            "size_text": a.get("size_text"),
+            "media_type": a["media_type"],
+            "uploaded_by": a["uploaded_by"],
+            "uploaded_at": a["uploaded_at"],
+            "sha256": a["digest"],
+            "status": a["status"],
+            "corruption_reason": a.get("corruption_reason"),
+            "last_verified_at": a.get("last_verified_at"),
+        }
+        for a in (attachments or [])
+    ]
     return json.dumps(
         {
             "report": "样本交接链路审计报告",
@@ -427,6 +537,7 @@ def build_json(
             "audit": audit,
             "signoffs": signoffs or [],
             "handovers": handovers or {"items": [], "history": [], "summary": {}},
+            "attachments": attachment_meta,
         },
         ensure_ascii=False,
         indent=2,

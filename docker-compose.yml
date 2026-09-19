@@ -9,8 +9,9 @@ services:
     environment:
       APP_PORT: "8080"
       AUDIT_DB_PATH: /data/audit.db
+      ATTACHMENT_DIR: /data/attachments
     volumes:
-      # 数据库持久化，容器重建不丢数据
+      # 数据库与事件证据附件持久化，容器重建不丢数据
       - audit-data:/data
     restart: unless-stopped
     healthcheck:

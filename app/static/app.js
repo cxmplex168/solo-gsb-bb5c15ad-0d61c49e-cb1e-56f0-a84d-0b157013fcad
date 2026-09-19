@@ -289,6 +289,10 @@
       </div>`;
   }
 
+  function attachmentsForEvent(eventId) {
+    return (state.data.attachments || []).filter((a) => a.event_id === eventId);
+  }
+
   function renderEvents() {
     const { audit } = state.data;
     const tbody = $("#event-tbody");
@@ -301,6 +305,13 @@
         const end = e.open
           ? `<span class="open-tag">仍在保管</span><div class="muted-cell">自 ${esc(e.start_time)} 起</div>`
           : esc(e.end_time);
+        const atts = attachmentsForEvent(e.id);
+        const corruptCount = atts.filter((a) => a.status === "corrupt").length;
+        const attBtn = atts.length
+          ? `📎 附件 <span class="att-count${corruptCount ? " att-corrupt" : ""}">${atts.length}${
+              corruptCount ? ` · ${corruptCount} 损坏` : ""
+            }</span>`
+          : "📎 附件";
         return `
         <tr class="${e.has_conflict ? "row-conflict" : ""}" data-eid="${e.id}">
           <td class="col-ord">${idx + 1}</td>
@@ -310,9 +321,10 @@
           <td>${end}</td>
           <td>${esc(e.duration)}</td>
           <td>${esc(e.note || "—")}</td>
-          <td>
+          <td style="white-space:nowrap">
             <button class="link-btn btn-edit" data-act="edit" data-id="${e.id}">编辑</button>
             <button class="link-btn btn-del" data-act="delete" data-id="${e.id}">删除</button>
+            <button class="link-btn btn-edit" data-act="attachments" data-id="${e.id}">${attBtn}</button>
           </td>
         </tr>`;
       })
@@ -1135,6 +1147,10 @@
     }
 
     if (btn.dataset.act === "delete") {
+      if (attachedCount(id) > 0) {
+        toast("该事件存在证据附件，请先在「📎 附件」中处理（删除）附件后再删除事件", true);
+        return;
+      }
       if (!confirm("确定删除这条交接事件？删除后将重新审计链路。")) return;
       try {
         await api(`/api/events/${id}`, { method: "DELETE" });
@@ -1144,7 +1160,15 @@
         toast(err.message, true);
       }
     }
+
+    if (btn.dataset.act === "attachments") {
+      openAttachmentModal(id);
+    }
   });
+
+  function attachedCount(eventId) {
+    return attachmentsForEvent(eventId).length;
+  }
 
   async function refresh() {
     await loadSamples(state.currentId); // 事件数更新
@@ -1186,6 +1210,11 @@
 
   $("#btn-delete-sample").addEventListener("click", async () => {
     const { sample } = state.data;
+    const total = (state.data.attachments || []).length;
+    if (total > 0) {
+      toast(`该样本下还有 ${total} 个事件证据附件，请先逐事件处理（删除）附件后再删除样本`, true);
+      return;
+    }
     if (!confirm(`确定删除样本 ${sample.code} 及其全部交接事件？此操作不可恢复。`)) return;
     try {
       await api(`/api/samples/${state.currentId}`, { method: "DELETE" });
@@ -1643,6 +1672,217 @@
       </div>`;
     $("#btn-confirm-import").disabled = true;
   }
+
+  // ---------- 事件证据附件 ----------
+
+  const attState = { eventId: null };
+  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+  const MEDIA_LABEL = {
+    "application/pdf": "PDF",
+    "image/jpeg": "JPEG 图片",
+    "image/png": "PNG 图片",
+  };
+
+  function fmtBytes(num) {
+    const units = ["B", "KiB", "MiB", "GiB"];
+    let v = num;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i += 1;
+    }
+    return i === 0 ? `${num} B` : `${v.toFixed(1)} ${units[i]}`;
+  }
+
+  async function openAttachmentModal(eventId) {
+    attState.eventId = eventId;
+    const ev = state.data.events.find((x) => x.id === eventId);
+    $("#att-event-label").textContent = ev
+      ? `· 事件 #${eventId}（${ev.custodian}，${ev.start_time}）`
+      : `· 事件 #${eventId}`;
+    $("#att-file").value = "";
+    $("#attachment-modal").hidden = false;
+    await renderAttachments(eventId);
+  }
+
+  async function renderAttachments(eventId) {
+    let list;
+    try {
+      list = await api(`/api/events/${eventId}/attachments`);
+      // 用该事件的最新列表整体替换缓存中的同事件附件，其余事件的保持不变
+      const others = (state.data.attachments || []).filter((a) => a.event_id !== eventId);
+      state.data.attachments = others.concat(list);
+    } catch (err) {
+      toast(err.message, true);
+      return;
+    }
+    renderEvents(); // 刷新事件行上的附件数量 / 损坏角标
+
+    const corrupt = list.filter((a) => a.status === "corrupt").length;
+    $("#att-summary").innerHTML = [
+      statChip(list.length, "附件记录", ""),
+      statChip(corrupt, "损坏", corrupt ? "bad" : "muted"),
+      statChip(new Set(list.map((a) => a.digest)).size, "去重实体", "ok"),
+    ].join("");
+
+    const tbody = $("#att-tbody");
+    if (!list.length) {
+      tbody.innerHTML = `<tr><td colspan="9" class="muted-cell" style="text-align:center;padding:20px">该事件暂无证据附件，可在上方选择 PDF / JPEG / PNG 上传</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = list
+      .map((a, i) => {
+        const status =
+          a.status === "corrupt"
+            ? `<span class="badge badge-fail">损坏</span><div class="muted-cell">${esc(
+                a.corruption_reason_text || a.corruption_reason || "—"
+              )}</div>`
+            : `<span class="badge badge-pass">正常</span><div class="muted-cell">校验于 ${esc(
+                a.last_verified_at || "—"
+              )}</div>`;
+        return `
+        <tr class="${a.status === "corrupt" ? "att-row-corrupt" : ""}">
+          <td class="col-ord">${i + 1}</td>
+          <td>${esc(a.filename)}</td>
+          <td>${esc(MEDIA_LABEL[a.media_type] || a.media_type)}</td>
+          <td>${esc(a.size_text || fmtBytes(a.size))}</td>
+          <td>${esc(a.uploaded_by)}</td>
+          <td class="muted-cell">${esc(a.uploaded_at)}</td>
+          <td><code class="digest">${esc(a.digest.slice(0, 12))}…</code></td>
+          <td>${status}</td>
+          <td style="white-space:nowrap">
+            <button class="link-btn btn-edit" data-att-dl="${a.id}">下载</button>
+            <button class="link-btn btn-edit" data-att-refresh-one="${a.id}">复核</button>
+            <button class="link-btn btn-del" data-att-del="${a.id}">删除</button>
+          </td>
+        </tr>`;
+      })
+      .join("");
+  }
+
+  const attModal = $("#attachment-modal");
+  $("#btn-close-att").addEventListener("click", () => (attModal.hidden = true));
+  attModal.addEventListener("click", (e) => {
+    if (e.target === attModal) attModal.hidden = true;
+  });
+
+  $("#btn-att-upload").addEventListener("click", async () => {
+    const eventId = attState.eventId;
+    const fileInput = $("#att-file");
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      toast("请先选择要上传的 PDF / JPEG / PNG 文件", true);
+      return;
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      toast(`文件超过 10 MiB 上限（当前 ${fmtBytes(file.size)}）`, true);
+      return;
+    }
+    const uploadedBy = $("#att-uploader").value.trim();
+    if (!uploadedBy) {
+      toast("请填写上传人", true);
+      return;
+    }
+    const form = new FormData();
+    form.append("file", file);
+    form.append("uploaded_by", uploadedBy);
+    const btn = $("#btn-att-upload");
+    btn.disabled = true;
+    try {
+      const resp = await fetch(`/api/events/${eventId}/attachments`, {
+        method: "POST",
+        body: form,
+      });
+      const payload = await resp.json().catch(() => null);
+      if (!resp.ok) throw new Error(extractError(payload) || `上传失败（${resp.status}）`);
+      toast(`附件已上传：${payload.filename}（实体 ${payload.digest.slice(0, 12)}…）`);
+      $("#att-file").value = "";
+      await renderAttachments(eventId);
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // 下载（blob 方式，保证浏览器按原文件名保存）
+  async function downloadAttachment(id) {
+    const resp = await fetch(`/api/attachments/${id}/download`);
+    if (resp.status === 409) {
+      const payload = await resp.json().catch(() => null);
+      toast(extractError(payload) || "附件完整性校验失败（409）", true);
+      await renderAttachments(attState.eventId);
+      return;
+    }
+    if (!resp.ok) {
+      const payload = await resp.json().catch(() => null);
+      toast(extractError(payload) || `下载失败（${resp.status}）`, true);
+      return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  $("#att-tbody").addEventListener("click", async (e) => {
+    const dlBtn = e.target.closest("button[data-att-dl]");
+    if (dlBtn) {
+      await downloadAttachment(Number(dlBtn.dataset.attDl));
+      return;
+    }
+    const refreshOneBtn = e.target.closest("button[data-att-refresh-one]");
+    if (refreshOneBtn) {
+      try {
+        const a = await api(
+          `/api/attachments/${refreshOneBtn.dataset.attRefreshOne}/refresh`,
+          { method: "POST" }
+        );
+        toast(a.status === "corrupt" ? "复核完成：附件已损坏" : "复核完成：摘要一致 ✓");
+      } catch (err) {
+        toast(err.message, true);
+      }
+      await renderAttachments(attState.eventId);
+      return;
+    }
+    const delBtn = e.target.closest("button[data-att-del]");
+    if (delBtn) {
+      const id = Number(delBtn.dataset.attDel);
+      const target = (state.data.attachments || []).find((x) => x.id === id);
+      if (
+        !confirm(
+          `确定删除附件「${target ? target.filename : id}」？\n` +
+            "仅解除本条附件记录；若实体已无其他引用，将一并清理实体文件。"
+        )
+      )
+        return;
+      try {
+        await api(`/api/attachments/${id}`, { method: "DELETE" });
+        toast("附件记录已删除");
+        await renderAttachments(attState.eventId);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    }
+  });
+
+  $("#btn-att-refresh").addEventListener("click", async () => {
+    try {
+      const list = await api(`/api/events/${attState.eventId}/attachments/refresh`, {
+        method: "POST",
+      });
+      const corrupt = list.filter((a) => a.status === "corrupt").length;
+      toast(corrupt ? `完整性刷新完成：${corrupt} 个附件损坏` : "完整性刷新完成：全部摘要一致 ✓");
+      await renderAttachments(attState.eventId);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
 
   // ---------- 启动 ----------
 

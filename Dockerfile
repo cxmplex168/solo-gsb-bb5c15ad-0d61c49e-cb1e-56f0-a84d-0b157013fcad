@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     APP_PORT=8080 \
-    AUDIT_DB_PATH=/data/audit.db
+    AUDIT_DB_PATH=/data/audit.db \
+    ATTACHMENT_DIR=/data/attachments
 
 WORKDIR /app
 
@@ -18,7 +19,7 @@ RUN pip install -r requirements.txt
 COPY app ./app
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh \
-    && mkdir -p /data
+    && mkdir -p /data/attachments
 
 EXPOSE 8080
 

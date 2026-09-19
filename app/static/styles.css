@@ -550,3 +550,26 @@ tr.row-invalid { background: #fffdf5; }
 @media (max-width: 900px) {
   .form-grid-queue { grid-template-columns: 1fr 1fr; }
 }
+
+/* ---------- 事件证据附件 ---------- */
+.att-event-label { font-size: 12.5px; color: var(--muted); font-weight: 400; }
+.att-count {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  background: #eef2f7; color: var(--muted);
+  border-radius: 999px; padding: 0 7px; margin-left: 2px;
+}
+.att-count.att-corrupt { background: var(--bad-bg); color: var(--bad-text); }
+.att-toolbar {
+  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+  margin: 6px 0 10px;
+}
+.att-toolbar input[type="file"] {
+  flex: 1; min-width: 220px;
+  font-size: 12.5px; padding: 5px 8px;
+}
+.att-uploader {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; font-weight: 600; color: #475569; margin: 0;
+}
+.att-uploader input { min-width: 150px; }
+tr.att-row-corrupt { background: #fff5f5; }

@@ -8,11 +8,30 @@ import re
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    PlainTextResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from sqlite3 import Connection
+
+from .attachments import (
+    AttachmentError,
+    attachment_count_for_event,
+    attachment_count_for_sample,
+    delete_attachment,
+    list_event_attachments,
+    list_sample_attachments,
+    refresh_attachment,
+    refresh_event_attachments,
+    save_attachment,
+    verify_and_prepare_download,
+)
 
 from .audit import build_audit
 from .bulk_import import (
@@ -147,12 +166,20 @@ def get_sample(sample_id: int, conn: Connection = Depends(get_conn)) -> dict[str
         "audit": audit,
         "signoffs": _list_signoffs(conn, sample_id),
         "handovers": build_handover_view(conn, sample_id),
+        "attachments": list_sample_attachments(conn, sample_id),
     }
 
 
 @app.delete("/api/samples/{sample_id}", status_code=204)
 def delete_sample(sample_id: int, conn: Connection = Depends(get_conn)) -> Response:
     _fetch_sample(conn, sample_id)
+    # 证据附件必须先逐事件处理（下载留档后删除附件记录），禁止连带删除
+    attached = attachment_count_for_sample(conn, sample_id)
+    if attached:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该样本下还有 {attached} 个事件证据附件，请先处理（删除）附件后再删除样本",
+        )
     conn.execute("DELETE FROM samples WHERE id = ?", (sample_id,))
     conn.commit()
     return Response(status_code=204)
@@ -205,6 +232,13 @@ def delete_event(event_id: int, conn: Connection = Depends(get_conn)) -> Respons
     if row is None:
         raise HTTPException(status_code=404, detail="交接事件不存在")
     sample_id = row["sample_id"]
+    # 有关联证据附件的事件禁止删除：请先下载留档并删除附件记录
+    attached = attachment_count_for_event(conn, event_id)
+    if attached:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该事件还有 {attached} 个证据附件，请先处理（删除）附件后再删除事件",
+        )
     # 删除事件后，绑定它的原确认保留为失效记录（行与快照不删）
     conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
     refresh_handover_validity(conn, sample_id)
@@ -212,6 +246,93 @@ def delete_event(event_id: int, conn: Connection = Depends(get_conn)) -> Respons
     sync_sample_findings(conn, sample_id)
     conn.commit()
     return Response(status_code=204)
+
+
+# ---------- 事件证据附件（内容寻址存储） ----------
+
+def _fetch_event(conn: Connection, event_id: int) -> Any:
+    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="交接事件不存在")
+    return row
+
+
+def _attachment_headers(filename: str) -> dict[str, str]:
+    """兼容各浏览器的 Content-Disposition（ASCII 回退 + RFC 5987 编码）。"""
+    fallback = filename.encode("ascii", "ignore").decode("ascii").replace('"', "") or "attachment"
+    return {"Content-Disposition": f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename)}"}
+
+
+@app.post("/api/events/{event_id}/attachments", status_code=201)
+async def upload_event_attachment(
+    event_id: int,
+    file: UploadFile = File(..., description="PDF / JPEG / PNG，单文件不超过 10 MiB"),
+    uploaded_by: str = Form(..., description="上传人姓名"),
+    conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    """流式落盘证据附件，按 SHA-256 内容寻址；相同内容只存一份实体。"""
+    _fetch_event(conn, event_id)
+    try:
+        return save_attachment(conn, event_id, file, uploaded_by)
+    except AttachmentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+@app.get("/api/events/{event_id}/attachments")
+def list_event_attachment_route(
+    event_id: int, conn: Connection = Depends(get_conn)
+) -> list[dict[str, Any]]:
+    """事件附件列表（含完整性状态；实体缺失自动标为损坏）。"""
+    _fetch_event(conn, event_id)
+    return list_event_attachments(conn, event_id)
+
+
+@app.get("/api/attachments/{attachment_id}/download")
+def download_attachment(
+    attachment_id: int, conn: Connection = Depends(get_conn)
+) -> FileResponse:
+    """下载前现场复算 SHA-256；实体缺失 / 摘要不一致返回 409 并标记损坏。"""
+    try:
+        item = verify_and_prepare_download(conn, attachment_id)
+    except AttachmentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+    return FileResponse(
+        item["path"],
+        media_type=item["media_type"],
+        headers=_attachment_headers(item["filename"]),
+    )
+
+
+@app.delete("/api/attachments/{attachment_id}", status_code=204)
+def delete_attachment_route(
+    attachment_id: int, conn: Connection = Depends(get_conn)
+) -> Response:
+    """删除附件记录（仅解除引用）；最后一个引用移除后才清理实体。"""
+    try:
+        delete_attachment(conn, attachment_id)
+    except AttachmentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+    return Response(status_code=204)
+
+
+@app.post("/api/attachments/{attachment_id}/refresh")
+def refresh_attachment_route(
+    attachment_id: int, conn: Connection = Depends(get_conn)
+) -> dict[str, Any]:
+    """完整性刷新：复算单个附件 SHA-256 并更新损坏标记。"""
+    try:
+        return refresh_attachment(conn, attachment_id)
+    except AttachmentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+@app.post("/api/events/{event_id}/attachments/refresh")
+def refresh_event_attachments_route(
+    event_id: int, conn: Connection = Depends(get_conn)
+) -> list[dict[str, Any]]:
+    """一键复算该事件下全部附件的完整性。"""
+    _fetch_event(conn, event_id)
+    return refresh_event_attachments(conn, event_id)
 
 
 # ---------- 批量导入交接事件（CSV 预览 + 确认） ----------
@@ -546,17 +667,19 @@ def export_report(
     audit = build_audit(_fetch_events(conn, sample_id))
     signoffs = _list_signoffs(conn, sample_id)
     handovers = build_handover_view(conn, sample_id)
+    attachments = list_sample_attachments(conn, sample_id)
+    event_index = {e["id"]: e for e in audit["events"]}
 
     if format == "markdown":
-        body = build_markdown(sample, audit, signoffs, handovers)
+        body = build_markdown(sample, audit, signoffs, handovers, attachments, event_index)
         headers = {"Content-Disposition": f'attachment; filename="{_safe_filename(sample["code"], "md")}"'}
         return PlainTextResponse(content=body, media_type="text/markdown; charset=utf-8", headers=headers)
     if format == "html":
-        body = build_html(sample, audit, signoffs, handovers)
+        body = build_html(sample, audit, signoffs, handovers, attachments, event_index)
         headers = {"Content-Disposition": f'attachment; filename="{_safe_filename(sample["code"], "html")}"'}
         return HTMLResponse(content=body, media_type="text/html; charset=utf-8", headers=headers)
 
-    body = build_json(sample, audit, signoffs, handovers)
+    body = build_json(sample, audit, signoffs, handovers, attachments)
     headers = {"Content-Disposition": f'attachment; filename="{_safe_filename(sample["code"], "json")}"'}
     return Response(content=body, media_type="application/json; charset=utf-8", headers=headers)
 

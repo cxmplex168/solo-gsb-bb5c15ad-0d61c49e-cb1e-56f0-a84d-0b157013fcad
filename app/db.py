@@ -162,6 +162,37 @@ CREATE TABLE IF NOT EXISTS finding_transitions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ftrans_finding ON finding_transitions(finding_id);
+
+-- 事件证据附件：内容寻址实体 + 每次上传独立记录。
+-- attachment_blobs 为按 SHA-256 摘要寻址的去重实体（相同内容只存一份）；
+-- attachments 是每次上传保留的附件记录（原文件名 / 大小 / 上传人 / 时间 /
+-- 所属事件），blob_digest 引用实体；删除记录仅解除引用，引用计数归零后
+-- 才由应用层清理实体。event_id 外键默认 RESTRICT：有关联附件的事件
+-- 不允许直接删除（应用层先以 409 提示处理附件）。
+CREATE TABLE IF NOT EXISTS attachment_blobs (
+    digest      TEXT PRIMARY KEY,
+    size        INTEGER NOT NULL,
+    media_type  TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id           INTEGER NOT NULL REFERENCES events(id),
+    blob_digest        TEXT    NOT NULL REFERENCES attachment_blobs(digest),
+    filename           TEXT    NOT NULL,
+    size               INTEGER NOT NULL,
+    media_type         TEXT    NOT NULL,
+    uploaded_by        TEXT    NOT NULL,
+    uploaded_at        TEXT    NOT NULL,
+    status             TEXT    NOT NULL DEFAULT 'ok',
+    corruption_reason  TEXT,
+    last_verified_at   TEXT,
+    created_at         TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_event ON attachments(event_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_digest ON attachments(blob_digest);
 """
 
 
@@ -192,6 +223,10 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
         _migrate(conn)
         _seed_demo_data(conn)
+    # 确保证据附件持久化目录存在（内容寻址实体的根目录）
+    from .attachments import attachment_dir
+
+    attachment_dir()
 
 
 def _seed_demo_data(conn: sqlite3.Connection) -> None:

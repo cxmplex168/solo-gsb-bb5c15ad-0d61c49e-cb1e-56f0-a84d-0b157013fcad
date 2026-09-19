@@ -462,6 +462,50 @@
     </div>
   </div>
 
+  <!-- 事件证据附件弹窗 -->
+  <div id="attachment-modal" class="modal-mask" hidden>
+    <div class="modal modal-wide">
+      <div class="card-head">
+        <h3>事件证据附件 <span id="att-event-label" class="att-event-label"></span></h3>
+        <span class="head-hint">PDF / JPEG / PNG，单文件不超过 10 MiB；按 SHA-256 内容寻址，相同内容只存一份实体，每次上传保留独立记录</span>
+      </div>
+      <div class="att-toolbar">
+        <input type="file" id="att-file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
+        <label class="att-uploader">上传人
+          <input type="text" id="att-uploader" maxlength="64" placeholder="如：审计员 王敏" />
+        </label>
+        <button type="button" class="btn btn-small btn-primary" id="btn-att-upload">⇪ 上传附件</button>
+        <button type="button" class="btn btn-small btn-ghost" id="btn-att-refresh">↻ 完整性刷新</button>
+      </div>
+      <p class="import-format-hint">
+        下载前服务端会复算 SHA-256；实体缺失或摘要不一致时下载返回冲突，记录在列表中标为
+        <b>损坏</b>，可点击完整性刷新重新复核。删除附件仅解除本记录，最后一个引用移除后才清理实体文件。
+      </p>
+      <div id="att-summary" class="handover-stats"></div>
+      <div class="table-wrap">
+        <table class="event-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>原文件名</th>
+              <th>类型</th>
+              <th>大小</th>
+              <th>上传人</th>
+              <th>上传时间</th>
+              <th>SHA-256</th>
+              <th>完整性</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="att-tbody"></tbody>
+        </table>
+      </div>
+      <div class="form-actions">
+        <button type="button" id="btn-close-att" class="btn btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 发现状态迁移记录弹窗 -->
   <div id="finding-history-modal" class="modal-mask" hidden>
     <div class="modal modal-wide">
