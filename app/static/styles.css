@@ -502,6 +502,19 @@ tr.row-invalid { background: #fffdf5; }
   background: var(--ok-bg); border: 1px solid #b7e4c7; color: #14532d;
 }
 
+/* ---------- 事件证据附件 ---------- */
+.att-corrupt-hint {
+  color: var(--bad-text); font-size: 11.5px; font-weight: 600; margin-top: 2px;
+}
+.att-upload-grid { grid-template-columns: 2fr 1fr; }
+#attachment-upload-form input[type="file"] {
+  font-size: 12.5px; padding: 5px 8px;
+}
+
+@media (max-width: 900px) {
+  .att-upload-grid { grid-template-columns: 1fr; }
+}
+
 /* ---------- 异常处置队列 ---------- */
 .queue-entry {
   display: flex; align-items: center; gap: 7px;

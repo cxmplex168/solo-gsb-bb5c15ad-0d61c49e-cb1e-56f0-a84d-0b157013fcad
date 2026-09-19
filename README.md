@@ -39,6 +39,14 @@
 每条发现可查看完整的**状态迁移记录**（含认领、释放、过期接管、租约失效）；
 处置写入需携带客户端看到的指纹版本，过期请求返回 **409 冲突**并提示刷新。
 
+每个交接事件还可上传**证据附件**（PDF / JPEG / PNG，单文件 ≤ 10 MiB）：
+服务端**流式落盘**并同步计算 SHA-256，实体文件按摘要做**内容寻址**——
+相同内容全库只存一份实体，每次上传仍保留独立附件记录（原文件名、大小、
+上传人、上传时间、所属事件）。**下载前复算摘要**，实体缺失或摘要不一致时
+返回 **409** 并在列表标为**损坏**；事件行内可随时**完整性刷新**。删除附件
+仅解除该条记录，**最后一个引用移除后才清理实体文件**；有关联附件的事件
+**禁止删除**并提示先处理附件。三种审计报告均只列附件元数据。
+
 ## 快速开始（Docker Compose，推荐）
 
 ```bash
@@ -56,11 +64,18 @@ docker compose up -d --build
    通过命名卷 `audit-data` 持久化）；
 3. 启动 uvicorn 监听 `8080`。
 
+数据位置（容器重建不丢数据）：
+
+| 数据 | 容器内路径 | 命名卷 |
+| --- | --- | --- |
+| SQLite 数据库（样本 / 事件 / 签署 / 确认 / 发现 / 附件记录） | `/data/audit.db` | `audit-data` |
+| 证据附件实体（按 SHA-256 内容寻址） | `/data/attachments/` | `audit-attachments` |
+
 停止 / 清理：
 
 ```bash
 docker compose down          # 停止并删除容器（保留数据卷）
-docker compose down -v       # 同时删除数据库卷
+docker compose down -v       # 同时删除数据库与附件卷
 ```
 
 ## 本地开发运行（不用 Docker）
@@ -75,8 +90,9 @@ pip install -r requirements-dev.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-数据库默认创建在 `app/audit.db`（首次启动自动建表并写入演示数据）。
-可通过环境变量 `AUDIT_DB_PATH` 自定义路径。
+数据库默认创建在 `app/audit.db`（首次启动自动建表并写入演示数据），
+附件实体默认存放在 `app/attachments/`。
+可分别通过环境变量 `AUDIT_DB_PATH`、`AUDIT_ATTACHMENT_DIR` 自定义路径。
 
 运行测试：
 
@@ -120,6 +136,12 @@ pytest -q
    仍存在的发现沿用处置状态，消失的转为「已消除」历史（状态筛选中可查），
    新出现的保持未处理。若提交时提示指纹版本冲突（409），说明期间数据已被
    他人更新或链路已变化，队列会自动刷新，请基于最新状态重试（详见下节）。
+10. 在「交接事件」表格每行的 **证据附件** 列点击 **附件 (n)** 打开附件面板：
+    选择文件（PDF / JPEG / PNG，≤ 10 MiB）并填写上传人后 **上传附件**；
+    列表中可 **下载**（下载前服务端自动复算摘要，缺失或不一致返回 409 并把
+    该条标为**损坏**）、**校验** 单条或用 **↻ 完整性刷新** 复算全部、
+    **删除** 附件记录（相同内容的实体文件在最后一个引用删除后才清理）。
+    有关联附件的事件无法删除，需先删除全部附件。
 
 ### 批量导入 CSV 格式与操作入口
 
@@ -230,6 +252,27 @@ pytest -q
   `claim_expires_at` 与 `claim_remaining_seconds`（剩余秒数）。
   顶部统计（未处理 / **认领中** / 已处理 / 已消除 / 累计）为全局数字，不受筛选影响。
 
+## 事件证据附件
+
+- **上传**：每个交接事件可上传 PDF / JPEG / PNG 证据文件，单文件不超过
+  **10 MiB**；格式按**文件头魔数**嗅探（不信任扩展名与声明的 Content-Type），
+  超限 / 类型不符 / 空文件分别返回 413 / 415 / 400；上传人必填（≤ 64 字符）；
+- **内容寻址存储**：服务端流式写盘并同步计算 SHA-256，实体文件存放于
+  `<附件目录>/<摘要前两位>/<完整摘要>`。**相同内容全库只存一份实体**
+  （`attachment_blobs` 一行 + 磁盘一个文件），每次上传仍生成独立的附件记录
+  （`attachments` 一行），保留原文件名、大小、上传人、上传时间与所属事件；
+  上传时若发现同摘要实体已损坏，会用新上传的健康内容自动修复；
+- **完整性**：每条记录维护 `integrity`（`ok` 完整 / `missing` 实体缺失 /
+  `mismatch` 摘要不一致）与最近校验时间。**下载前复算实体摘要**，缺失或不
+  一致返回 **409** 并把记录标为**损坏**；事件行内可对单条或全部附件做
+  **完整性刷新**；
+- **删除**：删除附件仅解除该条记录；仅当某摘要不再被任何记录引用时，才删除
+  实体行与磁盘文件（引用计数回收）。**有关联附件的事件禁止删除**（409，
+  提示先处理附件）；删除样本时其全部附件记录与无引用实体一并清理；
+- **报告**：Markdown / HTML / JSON 三种审计报告均附「事件证据附件」一节，
+  只列附件元数据（所属事件、文件名、类型、大小、SHA-256、上传人、上传时间、
+  完整性），不含文件内容。
+
 ## API 一览
 
 | 方法 | 路径 | 说明 |
@@ -237,11 +280,17 @@ pytest -q
 | GET | `/api/health` | 健康检查 |
 | GET | `/api/samples` | 样本列表（含事件数） |
 | POST | `/api/samples` | 新建样本 |
-| GET | `/api/samples/{id}` | 样本详情 + 事件 + 审计结果 + 签署快照摘要 |
-| DELETE | `/api/samples/{id}` | 删除样本（级联删除事件与签署快照） |
+| GET | `/api/samples/{id}` | 样本详情 + 事件 + 审计结果 + 签署快照摘要 + 附件元数据 |
+| DELETE | `/api/samples/{id}` | 删除样本（级联删除事件、签署快照与附件，回收无引用附件实体） |
 | POST | `/api/samples/{id}/events` | 登记交接事件（自动分配录入序） |
 | PUT | `/api/events/{id}` | 编辑交接事件 |
-| DELETE | `/api/events/{id}` | 删除交接事件 |
+| DELETE | `/api/events/{id}` | 删除交接事件（有关联附件时返回 409，需先删除全部附件） |
+| POST | `/api/events/{id}/attachments` | 上传证据附件（multipart：`file` + `uploaded_by`；PDF/JPEG/PNG ≤ 10 MiB，流式落盘 + SHA-256 内容寻址，相同内容只存一份实体） |
+| GET | `/api/events/{id}/attachments` | 事件附件列表（仅元数据，含完整性状态） |
+| POST | `/api/events/{id}/attachments/verify` | 完整性刷新：复算该事件全部附件实体摘要并更新状态 |
+| POST | `/api/attachments/{id}/verify` | 完整性刷新（单条） |
+| GET | `/api/attachments/{id}/download` | 下载附件（先复算摘要，实体缺失 / 摘要不一致返回 409 并标记损坏） |
+| DELETE | `/api/attachments/{id}` | 删除附件记录（最后一个引用移除后才清理实体文件） |
 | GET | `/api/samples/{id}/events/import-template` | 下载 UTF-8 CSV 导入模板（含表头与示例行，带 BOM） |
 | POST | `/api/samples/{id}/events/import-preview` | 上传 CSV 原文（请求体即文件字节）：逐行校验 + 导入后审计/交接失效投影，**只读不写库**，全部行有效时返回绑定事件链指纹的摘要令牌 `token`（10 分钟有效） |
 | POST | `/api/samples/{id}/events/import-confirm` | 携带 `{"token": "..."}` 在单一事务内再次校验并按文件顺序一次性写入；预览后链路有增删改 / 令牌过期、篡改、跨样本或已使用均返回 409 |
@@ -259,7 +308,7 @@ pytest -q
 | POST | `/api/findings/{fingerprint}/claim` | 限时认领 / 过期接管：`{"expected_version": n, "handler": "..."}`；单事务内先重算发现再同时校验版本与租约，未到期被他人占用返回 409，成功则版本 +1（认领 15 分钟），同一认领人重复认领幂等 |
 | POST | `/api/findings/{fingerprint}/release` | 主动释放：`{"expected_version": n, "handler": "...", "note": "..."}`；仅当前未到期租约的认领人可释放，版本 +1 |
 | POST | `/api/findings/{fingerprint}/dispose` | 处置写入：`{"action": "resolve"|"reopen", "expected_version": n, "handler": "...", "note": "..."}`；resolve 仅当前认领人可执行；指纹版本过期、租约冲突或状态不允许返回 409 |
-| GET | `/api/samples/{id}/report?format=markdown\|html\|json` | 导出审计报告（带下载文件名，含签署记录与各交接项状态） |
+| GET | `/api/samples/{id}/report?format=markdown\|html\|json` | 导出审计报告（带下载文件名，含签署记录、各交接项状态与附件元数据） |
 
 交互式 API 文档：http://localhost:8080/docs
 
@@ -273,6 +322,7 @@ pytest -q
 │   ├── bulk_import.py     # 批量导入：CSV 解析/逐行校验、预览令牌、事务内确认
 │   ├── handovers.py       # 双向交接确认：相邻交接项、确认状态机、失效维护
 │   ├── findings.py        # 异常处置队列：稳定指纹、重算迁移、版本乐观锁、限时认领租约
+│   ├── attachments.py     # 证据附件：流式上传、SHA-256 内容寻址、完整性复算、引用计数回收
 │   ├── db.py              # SQLite 连接、建表、演示数据
 │   ├── schemas.py         # Pydantic 请求模型与输入校验
 │   ├── report.py          # Markdown / HTML / JSON 报告生成
@@ -317,5 +367,13 @@ pytest -q
   客户端刷新后重试；租约默认 15 分钟（`FINDING_CLAIM_TTL_SECONDS` 可覆盖）；
   旧版本库启动时自动补齐新增列（轻量幂等迁移，演示数据不受影响）；
   删除样本时两级记录随样本级联清除；
+- 证据附件存于 `attachment_blobs`（实体，SHA-256 主键）与 `attachments`
+  （记录，指向实体摘要）两表：上传流式写临时文件并同步计算 SHA-256，完成后
+  按摘要做内容寻址（`<附件目录>/<摘要前两位>/<完整摘要>`），相同内容只保留
+  一份实体；下载 / 校验前复算实体摘要，缺失或篡改标记 `missing` / `mismatch`
+  并拒绝下载（409）；删除记录后按引用计数回收实体（最后一个引用移除才删
+  文件）；有关联附件的事件禁止删除，删除样本时记录与无引用实体一并清理；
+  附件目录由 `AUDIT_ATTACHMENT_DIR` 指定（默认与数据库同级的 `attachments/`，
+  Compose 中挂载 `audit-attachments` 卷持久化）；
 - 无外部前端构建步骤，静态资源由 FastAPI 的 `StaticFiles` 直接提供；
 - 服务进程在容器内以非 root 友好的方式运行于固定端口 **8080**，数据与镜像分离。

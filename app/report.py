@@ -40,6 +40,12 @@ HANDOVER_REASON_TEXT = {
     "adjacency_changed": "事件新增或调整后两条记录不再相邻",
 }
 
+ATTACHMENT_INTEGRITY_TEXT = {
+    "ok": "完整",
+    "missing": "损坏（实体缺失）",
+    "mismatch": "损坏（摘要不一致）",
+}
+
 
 def _md_cell(text: Any) -> str:
     """转义 Markdown 表格单元格中的竖线。"""
@@ -51,6 +57,7 @@ def build_markdown(
     audit: dict[str, Any],
     signoffs: list[dict[str, Any]] | None = None,
     handovers: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
     s = audit["summary"]
     lines = [
@@ -98,7 +105,30 @@ def build_markdown(
 
     lines += _signoff_markdown(signoffs)
     lines += _handover_markdown(handovers)
+    lines += _attachment_markdown(attachments)
     return "\n".join(lines)
+
+
+def _attachment_markdown(attachments: list[dict[str, Any]] | None) -> list[str]:
+    """证据附件一节：只列附件元数据（不含文件内容）。"""
+    lines = ["## 事件证据附件", ""]
+    if not attachments:
+        return lines + ["_暂无证据附件。_", ""]
+    lines += [
+        "| 所属事件 | 文件名 | 类型 | 大小 | SHA-256 | 上传人 | 上传时间 | 完整性 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for a in attachments:
+        event_label = f"#{a.get('event_seq', '—')} {a.get('event_custodian') or ''}".strip()
+        integrity = ATTACHMENT_INTEGRITY_TEXT.get(a.get("integrity"), a.get("integrity") or "—")
+        lines.append(
+            f"| {_md_cell(event_label)} | {_md_cell(a['filename'])} | "
+            f"{_md_cell(a.get('kind'))} | {_md_cell(a.get('size_label'))} | "
+            f"`{a['sha256'][:12]}` | {_md_cell(a['uploaded_by'])} | "
+            f"{_md_cell(a['uploaded_at'])} | {_md_cell(integrity)} |"
+        )
+    lines.append("")
+    return lines
 
 
 def _handover_markdown(handovers: dict[str, Any] | None) -> list[str]:
@@ -191,6 +221,7 @@ def build_html(
     audit: dict[str, Any],
     signoffs: list[dict[str, Any]] | None = None,
     handovers: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
     s = audit["summary"]
     status_class = {"pass": "ok", "warning": "warn", "fail": "bad", "empty": "muted"}.get(
@@ -244,6 +275,7 @@ def build_html(
         signoff_rows = "<tr><td colspan='7' class='muted'>尚未有任何签署记录。</td></tr>"
 
     handover_section = _handover_html(handovers)
+    attachment_section = _attachment_html(attachments)
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -324,8 +356,43 @@ def build_html(
     </table>
   </div>
   {handover_section}
+  {attachment_section}
 </body>
 </html>
+"""
+
+
+def _attachment_html(attachments: list[dict[str, Any]] | None) -> str:
+    """证据附件一节：只列附件元数据（不含文件内容）。"""
+    if not attachments:
+        return (
+            "<div class='card'><h2>事件证据附件</h2>"
+            "<p class='muted'>暂无证据附件。</p></div>"
+        )
+    rows_html = ""
+    for a in attachments:
+        integrity = ATTACHMENT_INTEGRITY_TEXT.get(a.get("integrity"), a.get("integrity") or "—")
+        int_cls = "ok" if a.get("integrity") == "ok" else "bad"
+        event_label = f"#{a.get('event_seq', '—')} {a.get('event_custodian') or ''}".strip()
+        rows_html += (
+            f"<tr><td>{html.escape(event_label)}</td>"
+            f"<td>{html.escape(a['filename'])}</td>"
+            f"<td>{html.escape(a.get('kind') or '—')}</td>"
+            f"<td>{html.escape(a.get('size_label') or '—')}</td>"
+            f"<td><code>{html.escape(a['sha256'][:12])}</code></td>"
+            f"<td>{html.escape(a['uploaded_by'])}</td>"
+            f"<td>{html.escape(a['uploaded_at'])}</td>"
+            f"<td><span class='status {int_cls}'>{html.escape(integrity)}</span></td></tr>"
+        )
+    return f"""
+  <div class="card">
+    <h2>事件证据附件</h2>
+    <table>
+      <tr><th>所属事件</th><th>文件名</th><th>类型</th><th>大小</th>
+          <th>SHA-256</th><th>上传人</th><th>上传时间</th><th>完整性</th></tr>
+      {rows_html}
+    </table>
+  </div>
 """
 
 
@@ -418,6 +485,7 @@ def build_json(
     audit: dict[str, Any],
     signoffs: list[dict[str, Any]] | None = None,
     handovers: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
     return json.dumps(
         {
@@ -427,6 +495,7 @@ def build_json(
             "audit": audit,
             "signoffs": signoffs or [],
             "handovers": handovers or {"items": [], "history": [], "summary": {}},
+            "attachments": attachments or [],
         },
         ensure_ascii=False,
         indent=2,

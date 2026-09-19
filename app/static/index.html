@@ -286,6 +286,7 @@
                   <th>结束时间</th>
                   <th>时长</th>
                   <th>备注</th>
+                  <th>证据附件</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -469,6 +470,51 @@
       <div id="finding-history-body" class="signoff-detail"></div>
       <div class="form-actions">
         <button type="button" id="btn-close-finding-history" class="btn btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 事件证据附件弹窗 -->
+  <div id="attachment-modal" class="modal-mask" hidden>
+    <div class="modal modal-wide">
+      <div class="card-head">
+        <h3 id="attachment-title">事件证据附件</h3>
+        <span class="head-hint">支持 PDF / JPEG / PNG，单文件 ≤ 10 MiB；服务端按 SHA-256 内容寻址存储，下载前自动复算完整性</span>
+      </div>
+      <form id="attachment-upload-form" class="event-form">
+        <div class="form-grid att-upload-grid">
+          <label>证据文件
+            <input type="file" id="att-file"
+                   accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" required />
+          </label>
+          <label>上传人
+            <input type="text" id="att-uploader" maxlength="64" placeholder="如：李四（运输组）" required />
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">上传附件</button>
+          <button type="button" id="btn-verify-atts" class="btn btn-ghost">↻ 完整性刷新</button>
+        </div>
+      </form>
+      <div class="table-wrap">
+        <table class="event-table">
+          <thead>
+            <tr>
+              <th>文件名</th>
+              <th>类型</th>
+              <th>大小</th>
+              <th>SHA-256</th>
+              <th>上传人</th>
+              <th>上传时间</th>
+              <th>完整性</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="attachment-tbody"></tbody>
+        </table>
+      </div>
+      <div class="form-actions">
+        <button type="button" id="btn-close-attachment" class="btn btn-ghost">关闭</button>
       </div>
     </div>
   </div>

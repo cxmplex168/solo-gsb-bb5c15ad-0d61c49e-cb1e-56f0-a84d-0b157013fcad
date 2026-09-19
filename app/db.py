@@ -162,6 +162,32 @@ CREATE TABLE IF NOT EXISTS finding_transitions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ftrans_finding ON finding_transitions(finding_id);
+
+-- 附件实体：按 SHA-256 内容寻址，相同内容全库只存一份
+-- （磁盘文件 <附件目录>/<摘要前两位>/<完整摘要>）。
+CREATE TABLE IF NOT EXISTS attachment_blobs (
+    sha256     TEXT PRIMARY KEY,
+    size       INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- 附件记录：每次上传一条独立记录，保留原文件名 / 大小 / 上传人 / 时间 / 事件。
+-- integrity 为最近一次复算结果：ok 完整 / missing 实体缺失 / mismatch 摘要不一致。
+CREATE TABLE IF NOT EXISTS attachments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id     INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    filename     TEXT    NOT NULL,
+    content_type TEXT    NOT NULL,
+    size         INTEGER NOT NULL,
+    sha256       TEXT    NOT NULL,
+    uploaded_by  TEXT    NOT NULL,
+    uploaded_at  TEXT    NOT NULL,
+    integrity    TEXT    NOT NULL DEFAULT 'ok',
+    checked_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_event ON attachments(event_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_sha ON attachments(sha256);
 """
 
 

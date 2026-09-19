@@ -9,9 +9,12 @@ services:
     environment:
       APP_PORT: "8080"
       AUDIT_DB_PATH: /data/audit.db
+      AUDIT_ATTACHMENT_DIR: /data/attachments
     volumes:
       # 数据库持久化，容器重建不丢数据
       - audit-data:/data
+      # 证据附件实体持久化（按 SHA-256 内容寻址）
+      - audit-attachments:/data/attachments
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health')"]
@@ -22,3 +25,4 @@ services:
 
 volumes:
   audit-data:
+  audit-attachments:
